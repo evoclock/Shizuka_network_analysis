@@ -2,6 +2,8 @@
 library(dplyr)
 library(tidyr)
 library(magrittr)
+library(broom)
+library(readr)
 library(asnipe)
 library(igraph)
 
@@ -51,7 +53,7 @@ matrix_operations_time = timer(start_time_matrix_operations,
 print_total_runtime("matrix operations", 
                     matrix_operations_time)
 
-# 1) get the adjacency matrix
+# 1) get the adjacency matrix for both seasons
 
 adjs = lapply(m_list, 
               function(x) get_network(t(x), # transposing so that we get IBG instead
@@ -311,3 +313,214 @@ boxplot(mod_swap2,
         names=c("Null (serial method)", "Null(global method)", "Empirical \n(bootstrap)"), 
         ylab="Modularity")
 
+# Is the pattern of association between years consistent?
+# i.e. do birds re-create the social networks year after year?
+# To test this we need to filter the individuals seen both years and perform a
+# Mantel test to see if association indices are correlated across years.
+
+library(ecodist)
+
+# Restrict comparison to individuals that were seen in two sequential years 
+
+# get IDs of birds that were present in both networks
+id12 = rownames(adjs[[1]])[rownames(adjs[[1]]) %in% rownames(adjs[[2]])]
+
+#get row/columns of those individuals in matrix 1 
+ids_m1 = match(id12, rownames(adjs[[1]])) 
+
+# and those in matrix 2
+ids_m2 = match(id12,rownames(adjs[[2]])) 
+
+# matrix 1 of association indices of only returning individuals
+m12 = adjs[[1]][ids_m1, ids_m1] 
+
+# matrix 2 of association indices of only returning individuals
+m21 = adjs[[2]][ids_m2, ids_m2] 
+
+# reorder the rows/columns by alphanumeric order
+m12 = m12[order(rownames(m12)), order(rownames(m12))] 
+m21 = m21[order(rownames(m21)), order(rownames(m21))] 
+
+mantel12 = mantel(as.dist(m12) ~ as.dist(m21)) 
+
+mantel12
+#  mantelr      pval1      pval2      pval3    llim.2.5%  ulim.97.5% 
+#  0.7393206  0.0010000  1.0000000  0.0010000  0.6463771  0.8514992 
+# There's a high correlation of association indices given the Mantel r 
+# coefficient.
+
+plot(m12[upper.tri(m12)], 
+     m21[upper.tri(m21)], 
+     pch = 19, 
+     col = rgb(1,0,0,0.5), 
+     cex = 2, 
+     xlab="Season 2 Association Index", 
+     ylab="Season 3 Association Index")
+
+# Or with ggplot
+# Create a data frame for ggplot
+data = data.frame(
+  x = m12[upper.tri(m12)],
+  y = m21[upper.tri(m21)]
+)
+
+# Plot 
+ggplot(data, aes(x = x, y = y)) +
+  geom_point(alpha = 0.5, 
+             color = "red", 
+             size = 3, 
+             shape = 19) +
+  labs(x = "Season 2 Association Index", 
+       y = "Season 3 Association Index") +
+  theme_minimal()
+
+# Could this effect be driven by fidelity to home ranges rather than social 
+# associates? 
+# There is no doubt that spatial overlap influences associations, since 
+# associations are measured as co-occurrence in time and space.
+# Importing a matrix of spatial overlap between each pair of each individual
+# (measured as the proportion of joint home range that is shared) and plot the
+# association index relative to this measure we get this:
+
+# Read the CSV data and convert it to a matrix
+s3 = as.matrix(read.csv("https://dshizuka.github.io/networkanalysis/SampleData/GCSPspaceoverlap3.csv", 
+                        header = TRUE, row.names = 1))
+
+# Match row names between s3 (the spatial overlap data) and adjs[[2]] (the 
+# association index for season 2) and remove NAs
+ids_s3 = match(rownames(s3), rownames(adjs[[2]]))
+ids_s3 = na.omit(ids_s3)
+ids_adj2 = match(rownames(adjs[[2]]), rownames(s3))
+ids_adj2 = na.omit(ids_adj2)
+
+# Subset the data using matched indices and remove NAs
+s3_use = s3[ids_s3, ids_s3]
+adj_use = adjs[[2]][ids_adj2, ids_adj2]
+s3_use = s3_use[complete.cases(s3_use), ]
+adj_use = adj_use[complete.cases(adj_use), ]
+
+# Reorder the rows and columns of the matrices (c)
+s3_use = s3_use[order(rownames(s3_use)), order(rownames(s3_use))]
+adj_use = adj_use[order(rownames(adj_use)), order(rownames(adj_use))]
+
+# Create the plot with the updated data
+plot(s3_use[upper.tri(s3_use)], adj_use[upper.tri(adj_use)], 
+     pch = 19, 
+     cex = 2, 
+     col = rgb(0, 0, 1, 0.5), 
+     xlab = "Spatial Overlap", 
+     ylab = "Association Index")
+
+# For ggplot you need to create a data frame from the upper triangle of 
+# both matrices
+data = data.frame(Spatial_Overlap = c(s3_use[upper.tri(s3_use)]),
+                   Association_Index = c(adj_use[upper.tri(adj_use)]))
+
+# Plot
+ggplot(data, aes(x = Spatial_Overlap, y = Association_Index)) +
+  geom_point(size = 3, 
+             alpha = 0.5, 
+             color = "blue") +
+  labs(x = "Spatial Overlap", 
+       y = "Association Index") +
+  theme_minimal()
+
+# How can we test for the effect of the previous year's association on the 
+# current year's association while taking into account the amount of spatial
+# overlap in home ranges? We use MRQAP (a.k.a 'network regression'). To do this
+# we use the spatial overlap matrix and the previous year adjacency matrix as 
+# covariates to test their effects on the current year adjacency matrix.
+
+# restrict the spatial overlap matrix to the individuals included in both 
+# seasons, sorted in the same way as the adjacency matrices
+
+# The match() function is used twice here, once for the row indices and once 
+# for the column indices. This ensures that we get a square sub-matrix from 
+# s3_use with matching rows and columns that correspond to the row names in m21.
+s3_match = s3_use[match(rownames(m21),rownames(s3_use)), 
+                  match(rownames(m21),rownames(s3_use))] 
+
+mrqap.dsp(m21 ~ m12 + s3_match)
+# m21 is the adjacency matrix of season 3 (dependent variable)
+# m12 is the adjacency matrix of season 2 (independent variable 1)
+# s3_match is the spartial overlap matrix of season 3
+
+# MRQAP with Double-Semi-Partialing (DSP)
+# 
+## Formula:  m21 ~ m12 + s3_match 
+# 
+# Coefficients:
+#            Estimate   P(β>=r) P(β<=r) P(|β|<=|r|)
+# intercept -0.01749305 0.068   0.932   0.069      
+# m12        0.45328523 1.000   0.000   0.000      
+# s3_match   0.12343038 1.000   0.000   0.000      
+# 
+# Residual standard error: 0.04051 on 88 degrees of freedom
+# F-statistic: 98.65 on 2 and 88 degrees of freedom, p-value:     0 
+# Multiple R-squared: 0.6915   Adjusted R-squared: 0.6845 
+# AIC: -35.74197
+
+# Both m12 and s3_match are significant predictors of the current year's 
+# adjacency matrix. The overall fit of the model is also very good (0.68), 
+# what we cannot do is compare the magnitudes of effect here because the two 
+# independent matrices were not scaled before running the model. So, let's
+# do it like so:
+
+mrqap.dsp(scale(m21) ~ scale(m12) + scale(s3_match))
+
+# MRQAP with Double-Semi-Partialing (DSP)
+# 
+# Formula:  scale(m21) ~ scale(m12) + scale(s3_match) 
+# 
+# Coefficients:
+#                 Estimate   P(β>=r) P(β<=r) P(|β|<=|r|)
+# intercept       0.01269215 0.551   0.449   0.722      
+# scale(m12)      0.43393270 1.000   0.000   0.000      
+# scale(s3_match) 0.53650775 1.000   0.000   0.000      
+# 
+# Residual standard error: 0.6302 on 88 degrees of freedom
+# F-statistic: 83.06 on 2 and 88 degrees of freedom, p-value:     0 
+# Multiple R-squared: 0.6537   Adjusted R-squared: 0.6458 
+# AIC: -88.04498
+
+# The results suggest that the effect of home range overlap is slightly greater
+# than that of the effect of associations in the previous year (0.54 vs. 0.43)
+# but it is still a significant pattern for preferentially flocking with last
+# year's flock-mates.
+# This is some really cool analysis by the Shizuka lab, right?
+# It was fun tweaking things and running through it.
+
+# Save the large data outputs: m_list, adjs, gs, mods, coms, mod_swap, swap_g, 
+# mod_swap2, swap_g2, df, df2, df_boot.
+
+# Save large data outputs
+saveRDS(m_list, file = "./outputs/m_list.Rds")
+saveRDS(adjs, file = "./outputs/adjs.Rds")
+saveRDS(gs, file = "./outputs/gs.Rds")
+saveRDS(mods, file = "./outputs/mods.Rds")
+saveRDS(coms, file = "./outputs/coms.Rds")
+saveRDS(mod_swap, file = "./outputs/mod_swap.Rds")
+saveRDS(swap_g, file = "./outputs/swap_g.Rds")
+saveRDS(mod_swap2, file = "./outputs/mod_swap2.Rds")
+saveRDS(swap_g2, file = "./outputs/swap_g2.Rds")
+saveRDS(df, file = "./outputs/df.Rds")
+saveRDS(df2, file = "./outputs/df2.Rds")
+saveRDS(df_boot, file = "./outputs/df_boot.Rds")
+
+# Save s3 data locally
+write.csv(s3, file = "./outputs/s3_data.csv", row.names = TRUE)
+
+
+# #If you wish to load them and avoid having to run all of the processes do
+# #so like this:
+# load_rds_files = function() {
+#   rds_files = list.files("./outputs/", pattern = "\\.Rds$", full.names = TRUE)
+#   data_list = lapply(rds_files, readRDS)
+#   return(data_list)
+# }
+# 
+# #Usage:
+# rds_data_list = load_rds_files()
+# 
+# # Load s3 data separately
+# s3_data = read.csv("./outputs/s3_data.csv", row.names = 1)

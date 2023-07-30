@@ -58,7 +58,8 @@ plot(g,
      vertex.label = "", 
      vertex.size = 5,
      vertex.color="orange", 
-     edge.color="#21918c") 
+     edge.color="#21918c",
+     main = paste("Golden-crowned sparrow network")) 
 
 
 # filtering individuals seen less than 3 times per flock
@@ -76,7 +77,8 @@ plot(g,
      vertex.label = "", 
      vertex.size = 5,
      vertex.color="orange", 
-     edge.color="#21918c") 
+     edge.color="#21918c",
+     main = paste("Golden-crowned sparrow network (flock > 2)")) 
 
 # Colour the network based on community membership
 
@@ -88,4 +90,5 @@ plot(g,
      edge.width = E(g)$weight*10, 
      vertex.label = "", 
      vertex.size = 5, 
-     vertex.color = node_colors)
+     vertex.color = node_colors,
+     main = paste("Golden-crowned sparrow community membership"))
